@@ -1,6 +1,7 @@
 import os
 import glob
 import math
+import csv
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -14,11 +15,13 @@ THETA_IS_DEGREE = False
 c = 299792458.0
 OBS_ENCODING = "utf-8"
 TABLE_ENCODING = "shift_jis"
+F_REST_FALLBACK = 1420.40575177e6
 
 # ==========================================
 # 共通関数
 # ==========================================
 def load_and_average_spectra(lon, band_str, obs_dir):
+    """CSVを読んで周波数と強度を返す"""
     if band_str == "B0":
         fname = f"{lon}_avg.csv"
     elif band_str == "B5":
@@ -38,15 +41,73 @@ def load_and_average_spectra(lon, band_str, obs_dir):
     except Exception:
         return None, None
 
+def load_table_data(table_dir):
+    """表データを読み込んでリストを返す"""
+    try:
+        theta_df = pd.read_csv(os.path.join(table_dir, "θ_o表.csv"), encoding=TABLE_ENCODING)
+        es_df    = pd.read_csv(os.path.join(table_dir, "E_s表.csv"), encoding=TABLE_ENCODING)
+        dist_df  = pd.read_csv(os.path.join(table_dir, "中心距離標.csv"), encoding=TABLE_ENCODING)
+        
+        theta_list = theta_df.iloc[:, 0].tolist()
+        es_list    = es_df.iloc[:, 0].tolist()
+        dist_ly    = dist_df.iloc[:, 1].to_numpy()
+        return theta_list, es_list, dist_ly
+    except FileNotFoundError:
+        return None, None, None
+
+# ==========================================
+# 0. TRA -> CSV 変換処理 (新規追加)
+# ==========================================
+def convert_tra_to_csv(target_dir):
+    """
+    指定フォルダ(およびサブフォルダ)内の .tra ファイルを全て .csv に変換する
+    """
+    # 再帰的に .tra を探す
+    tra_files = glob.glob(os.path.join(target_dir, "**", "*.tra"), recursive=True)
+    
+    if not tra_files:
+        return 0, ["エラー: .tra ファイルが見つかりませんでした。"]
+
+    converted_count = 0
+    logs = []
+
+    for tra_path in tra_files:
+        # 拡張子を変えて出力パスを作成 (.tra -> .csv)
+        base, _ = os.path.splitext(tra_path)
+        output_file = base + ".csv"
+
+        try:
+            with open(tra_path, "r", encoding="utf-8") as fin, \
+                 open(output_file, "w", newline="", encoding="utf-8") as fout:
+                
+                reader = csv.reader(fin)
+                writer = csv.writer(fout)
+                
+                # ヘッダスキップ (1行目)
+                next(reader, None)
+                
+                # 新しいヘッダを書き込み
+                writer.writerow(["Frequency_Hz", "Amplitude_dBm"])
+
+                for row in reader:
+                    # データ行のみ処理 (Frequency, Amplitude があるか確認)
+                    if len(row) >= 3:
+                        try:
+                            freq = float(row[1])
+                            amp = float(row[2])
+                            writer.writerow([freq, amp])
+                        except ValueError:
+                            continue
+            converted_count += 1
+        except Exception as e:
+            logs.append(f"変換エラー: {os.path.basename(tra_path)} -> {e}")
+
+    return converted_count, logs
+
 # ==========================================
 # 1. 平均化処理
 # ==========================================
 def process_average_once(root_dir, folder_path, max_angle, step_angle):
-    """
-    root_dir: 一時保存のルート (temp_upload)
-    folder_path: CSVが入っている実際のパス (temp_upload/11月19日 など)
-    """
-    # 出力先は、データがあるフォルダの中に "avg" を作る
     avg_dir = os.path.join(folder_path, "avg")
     os.makedirs(avg_dir, exist_ok=True)
 
@@ -86,23 +147,17 @@ def process_average_once(root_dir, folder_path, max_angle, step_angle):
     return processed_count, avg_dir, log_messages
 
 # ==========================================
-# 2. 回転速度計算
+# 2. 回転速度計算 (Velocity ON / BGあり)
 # ==========================================
 def calculate_velocity_on(folder_path, max_angle, step_angle):
-    """
-    folder_path: CSVが入っているフォルダ (ここに avg フォルダがあるはず)
-    """
     obs_dir = os.path.join(folder_path, "avg")
-    
-    # ★表データはGitHubの 'tables' フォルダを見る
     table_dir = "./tables" if os.path.exists("./tables") else "."
-
     longitudes = list(range(0, max_angle + 1, step_angle))
     peak_list = []
     logs = []
 
     if not os.path.exists(obs_dir):
-        return None, f"エラー: {obs_dir} が見つかりません。「平均化」がまだのようです。"
+        return None, f"エラー: {obs_dir} が見つかりません。「平均化」を実行してください。"
 
     # 1. ピーク検出
     for lon in longitudes:
@@ -110,19 +165,16 @@ def calculate_velocity_on(folder_path, max_angle, step_angle):
         freq_bg, amp_bg = load_and_average_spectra(lon, "B5", obs_dir)
 
         if freq_on is None or freq_bg is None:
-            logs.append(f"銀経 {lon}°: データ不足スキップ")
+            logs.append(f"銀経 {lon}°: データ不足")
             continue
-
         if not np.allclose(freq_on, freq_bg):
             logs.append(f"銀経 {lon}°: 周波数軸不一致")
             continue
 
         freq = freq_on
         amp_sub = amp_on - amp_bg 
-
         mask = (freq >= FMIN) & (freq <= FMAX)
-        if not mask.any():
-            continue
+        if not mask.any(): continue
 
         freq_win = freq[mask]
         amp_win = amp_sub[mask]
@@ -137,24 +189,66 @@ def calculate_velocity_on(folder_path, max_angle, step_angle):
     # 2. f_rest
     f_ref_candidates = [p["f_peak_Hz"] for p in peak_list if p["銀経"] == 0]
     if not f_ref_candidates:
-        f_rest = 14204058.0
+        f_rest = F_REST_FALLBACK
         logs.append("WARN: 銀経0°なし -> f_rest暫定値使用")
     else:
         f_rest = sum(f_ref_candidates) / len(f_ref_candidates)
 
-    # 3. 表データ読み込み
-    try:
-        theta_df = pd.read_csv(os.path.join(table_dir, "θ_o表.csv"), encoding=TABLE_ENCODING)
-        es_df    = pd.read_csv(os.path.join(table_dir, "E_s表.csv"), encoding=TABLE_ENCODING)
-        dist_df  = pd.read_csv(os.path.join(table_dir, "中心距離標.csv"), encoding=TABLE_ENCODING)
-    except FileNotFoundError:
-        return None, f"エラー: 表ファイルが見つかりません。tablesフォルダを確認してください。"
+    return _calculate_velocity_common(peak_list, f_rest, table_dir, logs)
 
-    theta_list = theta_df.iloc[:, 0].tolist()
-    es_list    = es_df.iloc[:, 0].tolist()
-    dist_ly    = dist_df.iloc[:, 1].to_numpy()
+# ==========================================
+# 3. 回転速度計算 (Velocity OFF / BGなし)
+# ==========================================
+def calculate_velocity_off(folder_path, max_angle, step_angle):
+    obs_dir = os.path.join(folder_path, "avg")
+    table_dir = "./tables" if os.path.exists("./tables") else "."
+    longitudes = list(range(0, max_angle + 1, step_angle))
+    peak_list = []
+    logs = []
 
-    # 4. 速度計算
+    if not os.path.exists(obs_dir):
+        return None, f"エラー: {obs_dir} が見つかりません。「平均化」を実行してください。"
+
+    for lon in longitudes:
+        # ONだけ読む
+        freq, amp = load_and_average_spectra(lon, "B0", obs_dir)
+        if freq is None:
+            continue
+
+        mask = (freq >= FMIN) & (freq <= FMAX)
+        if not mask.any(): continue
+
+        freq_win = freq[mask]
+        amp_win = amp[mask]
+        
+        # 簡易ベースライン補正（中央値を引く）
+        amp_win2 = amp_win - np.median(amp_win)
+        
+        idx_peak = int(np.argmax(amp_win2))
+        f_peak = float(freq_win[idx_peak])
+        peak_list.append({"銀経": lon, "f_peak_Hz": f_peak})
+
+    if not peak_list:
+        return None, "ピークが見つかりませんでした"
+
+    # f_rest 決定
+    f_ref_candidates = [p["f_peak_Hz"] for p in peak_list if p["銀経"] == 0]
+    if not f_ref_candidates:
+        f_rest = F_REST_FALLBACK
+        logs.append("WARN: 銀経0°なし -> f_rest暫定値使用")
+    else:
+        f_rest = float(sum(f_ref_candidates) / len(f_ref_candidates))
+
+    return _calculate_velocity_common(peak_list, f_rest, table_dir, logs)
+
+# ==========================================
+# 共通計算ロジック
+# ==========================================
+def _calculate_velocity_common(peak_list, f_rest, table_dir, logs):
+    theta_list, es_list, dist_ly = load_table_data(table_dir)
+    if theta_list is None:
+        return None, "エラー: 表ファイルが見つかりません。tablesフォルダを確認してください。"
+
     result_rows = []
     for p in peak_list:
         lon = p["銀経"]
