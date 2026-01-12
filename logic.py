@@ -5,7 +5,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# 定数
+# ==========================================
+# 定数設定
+# ==========================================
 FMIN = 1405e6
 FMAX = 1420e6
 THETA_IS_DEGREE = False
@@ -17,7 +19,6 @@ TABLE_ENCODING = "shift_jis"
 # 共通関数
 # ==========================================
 def load_and_average_spectra(lon, band_str, obs_dir):
-    """CSVを読んで周波数と強度を返す"""
     if band_str == "B0":
         fname = f"{lon}_avg.csv"
     elif band_str == "B5":
@@ -40,25 +41,25 @@ def load_and_average_spectra(lon, band_str, obs_dir):
 # ==========================================
 # 1. 平均化処理
 # ==========================================
-def process_average_once(data_dir, folder_name, max_angle, step_angle):
+def process_average_once(root_dir, folder_path, max_angle, step_angle):
     """
-    data_dir: 観測データフォルダが入っている親フォルダ (例: ./temp_data)
-    folder_name: その中の具体的な日付フォルダ名 (例: 11月19日)
+    root_dir: 一時保存のルート (temp_upload)
+    folder_path: CSVが入っている実際のパス (temp_upload/11月19日 など)
     """
-    target_dir = os.path.join(data_dir, folder_name)
-    avg_dir = os.path.join(target_dir, "avg")
+    # 出力先は、データがあるフォルダの中に "avg" を作る
+    avg_dir = os.path.join(folder_path, "avg")
     os.makedirs(avg_dir, exist_ok=True)
 
     longitudes = list(range(0, max_angle + 1, step_angle))
     log_messages = []
     processed_count = 0
 
-    if not os.path.exists(target_dir):
-        return 0, avg_dir, [f"エラー: {target_dir} が見つかりません。ZIPの中身を確認してください。"]
+    if not os.path.exists(folder_path):
+        return 0, avg_dir, ["エラー: データフォルダが見つかりません。"]
 
     for lon in longitudes:
         for suffix in ["", "B"]: 
-            pattern = os.path.join(target_dir, f"{lon}{suffix}.*.csv")
+            pattern = os.path.join(folder_path, f"{lon}{suffix}.*.csv")
             paths = glob.glob(pattern)
             
             if not paths:
@@ -87,12 +88,13 @@ def process_average_once(data_dir, folder_name, max_angle, step_angle):
 # ==========================================
 # 2. 回転速度計算
 # ==========================================
-def calculate_velocity_on(data_dir, folder_name, max_angle, step_angle):
-    # 観測データはアップロードされた一時フォルダを見る
-    obs_dir = os.path.join(data_dir, folder_name, "avg")
+def calculate_velocity_on(folder_path, max_angle, step_angle):
+    """
+    folder_path: CSVが入っているフォルダ (ここに avg フォルダがあるはず)
+    """
+    obs_dir = os.path.join(folder_path, "avg")
     
-    # ★重要: 表データはサーバー上の固定フォルダ(tables)を見る
-    # もし無ければカレントディレクトリを見る
+    # ★表データはGitHubの 'tables' フォルダを見る
     table_dir = "./tables" if os.path.exists("./tables") else "."
 
     longitudes = list(range(0, max_angle + 1, step_angle))
@@ -100,7 +102,7 @@ def calculate_velocity_on(data_dir, folder_name, max_angle, step_angle):
     logs = []
 
     if not os.path.exists(obs_dir):
-        return None, f"エラー: {obs_dir} が見つかりません。先に「平均化」を行ってください。"
+        return None, f"エラー: {obs_dir} が見つかりません。「平均化」がまだのようです。"
 
     # 1. ピーク検出
     for lon in longitudes:
@@ -146,7 +148,7 @@ def calculate_velocity_on(data_dir, folder_name, max_angle, step_angle):
         es_df    = pd.read_csv(os.path.join(table_dir, "E_s表.csv"), encoding=TABLE_ENCODING)
         dist_df  = pd.read_csv(os.path.join(table_dir, "中心距離標.csv"), encoding=TABLE_ENCODING)
     except FileNotFoundError:
-        return None, f"エラー: 表ファイルが見つかりません。GitHubの 'tables' フォルダを確認してください。"
+        return None, f"エラー: 表ファイルが見つかりません。tablesフォルダを確認してください。"
 
     theta_list = theta_df.iloc[:, 0].tolist()
     es_list    = es_df.iloc[:, 0].tolist()
