@@ -12,43 +12,61 @@ st.title("🌌 電波天文 解析ツール (班員用)")
 st.write("自分の観測データ(フォルダごとZIPしたもの)をアップロードして解析できます。")
 
 # ==========================================
-# データのアップロード処理
+# データのアップロードとフォルダ検出処理
 # ==========================================
-# 一時保存用ディレクトリ
 TEMP_DIR = "temp_upload"
-
-# サイドバーでZIPアップロード
 st.sidebar.header("1. データのアップロード")
 uploaded_file = st.sidebar.file_uploader("観測データのZIPファイル", type="zip")
 
-# データフォルダ名の特定
-target_folder_name = ""
+# セッション状態にパスを保存（ページ切り替えで消えないように）
+if "target_path" not in st.session_state:
+    st.session_state.target_path = None
+if "folder_name" not in st.session_state:
+    st.session_state.folder_name = ""
 
 if uploaded_file is not None:
-    # 毎回リセット（古いデータを消す）
+    # 新しいファイルが来たらリセット
     if os.path.exists(TEMP_DIR):
         shutil.rmtree(TEMP_DIR)
     os.makedirs(TEMP_DIR, exist_ok=True)
     
-    # ZIP解凍
+    # 解凍
     with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
         zip_ref.extractall(TEMP_DIR)
     
     st.sidebar.success("アップロード＆解凍完了！")
     
-    # 解凍した中身からフォルダ名を探す（例: "11月19日"）
-    subdirs = [d for d in os.listdir(TEMP_DIR) if os.path.isdir(os.path.join(TEMP_DIR, d))]
+    # ---------------------------------------------------------
+    # ★改良点: フォルダ名が何であれ、CSVが入っている場所を自動で探す
+    # ---------------------------------------------------------
+    found_path = None
+    found_name = ""
+
+    # temp_upload の中を全部探す
+    for root, dirs, files in os.walk(TEMP_DIR):
+        # CSVファイルが含まれているかチェック (ただし avg フォルダや MACOSX は除外)
+        csv_files = [f for f in files if f.endswith(".csv")]
+        if csv_files and "avg" not in root and "__MACOSX" not in root:
+            found_path = root
+            found_name = os.path.basename(root)
+            # もしZIP直下にCSVがある場合、フォルダ名はZIPファイル名などにする手もあるが
+            # ここでは root (temp_upload) そのものになる
+            if found_name == "temp_upload":
+                found_name = "ルートフォルダ(ZIP直下)"
+            break
     
-    # __MACOSX などのゴミフォルダを除外
-    subdirs = [d for d in subdirs if not d.startswith("__")]
-    
-    if len(subdirs) > 0:
-        target_folder_name = subdirs[0]
-        st.sidebar.info(f"検出されたフォルダ: {target_folder_name}")
+    if found_path:
+        st.session_state.target_path = found_path
+        st.session_state.folder_name = found_name
+        st.sidebar.info(f"📁 検出されたデータ: **{found_name}**")
     else:
-        st.sidebar.warning("ZIPの中にフォルダが見つかりませんでした。")
+        st.session_state.target_path = None
+        st.session_state.folder_name = ""
+        st.sidebar.warning("⚠️ ZIP内にCSVファイルが見つかりませんでした。")
 else:
-    st.sidebar.warning("ZIPファイルをアップロードしてください。")
+    # ファイルが削除されたらクリア
+    st.session_state.target_path = None
+    st.session_state.folder_name = ""
 
 
 st.sidebar.markdown("---")
@@ -60,19 +78,17 @@ mode = st.sidebar.radio("機能を選択", ["ホーム", "2. 平均化 (Average)
 if mode == "ホーム":
     st.markdown("""
     ### 使い方
-    1. 自分のパソコンで、観測データのフォルダ（例: `11月19日`）を**右クリックして「ZIPファイルに圧縮」**します。
-       - 中身は `0.1.csv`, `0B.1.csv` ... などが入っている状態にしてください。
-    2. 左のサイドバーにあるアップローダーにドラッグ＆ドロップします。
-    3. 解析メニューを選んで実行します。
+    1. 観測データのフォルダ（日付の名前など）をZIP圧縮します。
+    2. 左のサイドバーにアップロードします。
+       - **フォルダ名は自動で認識されます。** (例: `11月19日`, `12月05日` など何でもOK)
+    3. 解析メニューを実行してください。
     """)
     
-    # サーバー上の表データの確認
     st.write("---")
-    st.write("サーバー状態確認:")
     if os.path.exists("./tables/θ_o表.csv"):
-        st.success("✅ 共通データ（表ファイル）は正常に読み込まれています。")
+        st.success("✅ 共通データ（表ファイル）は準備OKです。")
     else:
-        st.error("❌ 共通データ（tablesフォルダ）が見つかりません。管理者に連絡してください。")
+        st.error("❌ 共通データ（tablesフォルダ）が見つかりません。")
 
 # ==========================================
 # 2. 平均化
@@ -80,11 +96,14 @@ if mode == "ホーム":
 elif mode == "2. 平均化 (Average)":
     st.header("平均スペクトルの作成")
     
-    if not target_folder_name:
-        st.error("先に左のサイドバーからZIPファイルをアップロードしてください。")
+    target_path = st.session_state.target_path
+    folder_name_display = st.session_state.folder_name
+
+    if not target_path:
+        st.error("先にZIPファイルをアップロードしてください。")
     else:
         with st.form("avg_form"):
-            st.text_input("対象フォルダ (自動検出)", value=target_folder_name, disabled=True)
+            st.text_input("解析対象のフォルダ名 (自動検出)", value=folder_name_display, disabled=True)
             col1, col2 = st.columns(2)
             max_angle = col1.number_input("最後の銀経", value=60, step=5)
             step_angle = col2.number_input("刻み幅", value=5, step=1)
@@ -93,7 +112,8 @@ elif mode == "2. 平均化 (Average)":
 
         if submitted:
             with st.spinner("計算中..."):
-                count, out_dir, logs = logic.process_average_once(TEMP_DIR, target_folder_name, max_angle, step_angle)
+                # パスを直接渡す
+                count, out_dir, logs = logic.process_average_once(TEMP_DIR, target_path, max_angle, step_angle)
             
             if logs:
                 with st.expander("ログ詳細"):
@@ -102,7 +122,6 @@ elif mode == "2. 平均化 (Average)":
             
             if count > 0:
                 st.success(f"完了！ {count} ファイルを作成しました。")
-                # ZIPでダウンロードさせる機能をつけると親切かも（今回は省略）
             else:
                 st.error("ファイルが作成されませんでした。")
 
@@ -112,16 +131,18 @@ elif mode == "2. 平均化 (Average)":
 elif mode == "3. 回転速度解析 (Velocity ON)":
     st.header("銀河回転速度の計算")
     
-    if not target_folder_name:
-        st.error("先に左のサイドバーからZIPファイルをアップロードしてください。")
+    target_path = st.session_state.target_path
+    folder_name_display = st.session_state.folder_name
+
+    if not target_path:
+        st.error("先にZIPファイルをアップロードしてください。")
     else:
-        # 平均データがあるかチェック
-        avg_check_path = os.path.join(TEMP_DIR, target_folder_name, "avg")
-        if not os.path.exists(avg_check_path) or not os.listdir(avg_check_path):
-            st.warning("⚠️ 平均データ(avg)が見当たりません。「2. 平均化」を先に実行したほうが良いかもしれません。")
+        # avgフォルダがあるか簡易チェック
+        if not os.path.exists(os.path.join(target_path, "avg")):
+            st.warning("⚠️ 平均データ(avg)が見当たりません。先に「2. 平均化」を実行してください。")
 
         with st.form("vel_form"):
-            st.text_input("対象フォルダ (自動検出)", value=target_folder_name, disabled=True)
+            st.text_input("解析対象のフォルダ名 (自動検出)", value=folder_name_display, disabled=True)
             col1, col2 = st.columns(2)
             max_angle = col1.number_input("最後の銀経", value=60, step=5)
             step_angle = col2.number_input("刻み幅", value=5, step=1)
@@ -130,7 +151,8 @@ elif mode == "3. 回転速度解析 (Velocity ON)":
 
         if submitted:
             with st.spinner("解析中..."):
-                df_result, msg = logic.calculate_velocity_on(TEMP_DIR, target_folder_name, max_angle, step_angle)
+                # パスを直接渡す
+                df_result, msg = logic.calculate_velocity_on(target_path, max_angle, step_angle)
             
             if df_result is None:
                 st.error(msg)
@@ -138,14 +160,14 @@ elif mode == "3. 回転速度解析 (Velocity ON)":
                 st.success("計算完了！")
                 st.dataframe(df_result)
                 
-                # グラフ
                 st.line_chart(df_result.set_index("中心距離[光年]")["回転速度[km/s]"])
                 
-                # ダウンロード
+                # 出力ファイル名は検出したフォルダ名を使う
+                safe_name = folder_name_display.replace(" ", "_")
                 csv = df_result.to_csv(index=False, encoding="shift_jis")
                 st.download_button(
                     label="CSVをダウンロード (Shift-JIS)",
                     data=csv,
-                    file_name=f"velocity_{target_folder_name}.csv",
+                    file_name=f"velocity_{safe_name}.csv",
                     mime="text/csv"
                 )
