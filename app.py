@@ -8,8 +8,23 @@ import logic
 # ページ設定
 st.set_page_config(page_title="電波天文 解析ランチャー", layout="centered")
 
+# GitHubなど削除
+hide_streamlit_style = """
+            <style>
+            /* 右上のデプロイボタンなどを消す */
+            .stAppDeployButton {display:none;}
+            /* 右上のハンバーガーメニューを消す */
+            #MainMenu {visibility: hidden;}
+            /* フッター（Made with Streamlit）を消す */
+            footer {visibility: hidden;}
+            /* ヘッダーの装飾バーを消す */
+            header {visibility: hidden;}
+            </style>
+            """
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
 # タイトル
-st.title("🚀 電波天文 解析ランチャー")
+st.title("🚀 解析ツール")
 st.write("実行したい機能を選択してください。")
 
 # ==========================================
@@ -218,3 +233,4 @@ elif selected_key == "vel_off":
 
 else:
     st.info("👆 上のボックスから機能を選択してください。")
+
